@@ -352,19 +352,17 @@ class SpeechCaptureService : Service() {
             lastPushMs.set(System.currentTimeMillis())
             scheduleWatchdog()
 
-            // Determine what will actually be displayed
-            // (overlay shows Hindi if available, srcText as fallback)
-            val displayText = if (hindiText.length >= 2) hindiText else srcText
-            if (displayText.length < 2) return
+            // Only process if Hindi translation exists — never show English
+            if (hindiText.length < 2) return
 
-            // Smart dedup — skip only if >80% word overlap with last displayed text
-            if (lastPushedHindi.isNotEmpty() && isTooSimilar(displayText, lastPushedHindi)) {
-                Log.d(TAG, "Dedup: too similar to last — skipping")
+            // Smart dedup on Hindi text only
+            if (lastPushedHindi.isNotEmpty() && isTooSimilar(hindiText, lastPushedHindi)) {
+                Log.d(TAG, "Dedup: too similar to last Hindi — skipping")
                 return
             }
 
-            Log.d(TAG, "[$lang/${(confidence*100).toInt()}%] display: ${displayText.take(80)}")
-            lastPushedHindi = displayText
+            Log.d(TAG, "[$lang/${(confidence*100).toInt()}%] HI: ${hindiText.take(80)}")
+            lastPushedHindi = hindiText
             latestOriginal  = srcText; latestEnglish = srcText; latestHindi = hindiText
 
             mainHandler.post {
