@@ -81,9 +81,9 @@ class SpeechCaptureService : Service() {
         private const val QUEUE_CAPACITY = 4
 
         // small model with 2s chunks: ~5s Whisper + ~0.5s CT2 + 10s margin = 16s
-        private const val STALE_MS           = 16_000L
+        private const val STALE_MS           = 23_000L
         private const val CONNECT_TIMEOUT_MS = 2_000
-        private const val READ_TIMEOUT_MS    = 16_000
+        private const val READ_TIMEOUT_MS    = 23_000
 
         private const val MAX_CONSECUTIVE_ERRORS = 5
         private const val WATCHDOG_TIMEOUT_MS    = 25_000L
