@@ -67,6 +67,13 @@ class LiveCaptionReader : AccessibilityService() {
         }
 
         startTranslateWorker()
+        // Clear cached state from previous session
+        lastSentText       = ""
+        lastHindiOut       = ""
+        lastCaptionText    = ""
+        previousWindowText = ""
+        SpeechCaptureService.latestHindi   = ""
+        SpeechCaptureService.latestEnglish = ""
         Log.i(TAG, "LiveCaptionReader v6 connected")
         scope.launch(Dispatchers.Main) {
             MainActivity.instance?.onLiveCaptionReaderConnected()
@@ -87,6 +94,8 @@ class LiveCaptionReader : AccessibilityService() {
         scheduleTranslation(captionText)
     }
 
+    private var previousWindowText = ""  // tracks previous full text of caption window
+
     private fun readFromCaptionWindow(): String? {
         val allWindows = try { windows } catch (_: Exception) { return null }
         if (allWindows.isNullOrEmpty()) return null
@@ -96,23 +105,58 @@ class LiveCaptionReader : AccessibilityService() {
             val windowPkg = root.packageName?.toString() ?: ""
 
             if (windowPkg in LIVE_CAPTION_PACKAGES) {
-                // Collect ALL text nodes from this window
                 val textNodes = mutableListOf<String>()
                 collectAllText(root, textNodes)
                 root.recycle()
 
-                // Filter out known static UI labels
-                val caption = textNodes
+                val validTexts = textNodes
                     .filter { isValidCaption(it) }
                     .filter { !isStaticUiLabel(it) }
-                    .maxByOrNull { it.length }  // longest valid text = caption
 
-                if (!caption.isNullOrBlank()) return caption
+                if (validTexts.isEmpty()) return null
+
+                // Find the NEWEST text — text that wasn't in the previous reading
+                // Live Captions accumulates text; we want only what just changed
+                val currentFullText = validTexts.joinToString(" ")
+
+                val newText = findNewContent(previousWindowText, currentFullText)
+                previousWindowText = currentFullText
+
+                return if (newText.isNotBlank() && isValidCaption(newText)) newText else null
             } else {
                 root.recycle()
             }
         }
         return null
+    }
+
+    private fun findNewContent(previous: String, current: String): String {
+        if (previous.isBlank()) return current.trim()
+        if (current == previous) return ""
+
+        // Find what was added to the end (Live Captions appends to existing text)
+        if (current.startsWith(previous)) {
+            return current.removePrefix(previous).trim()
+        }
+
+        // Text completely changed (new sentence started)
+        // Find the longest suffix of current that is NOT in previous
+        val currentWords = current.split(" ")
+        val previousWords = previous.split(" ").toSet()
+
+        // Find where new content starts from the end
+        var newStart = currentWords.size
+        for (i in currentWords.indices.reversed()) {
+            if (currentWords[i] in previousWords) {
+                newStart = i + 1
+                break
+            }
+            if (i < currentWords.size - 8) break // don't look back more than 8 words
+        }
+
+        val newWords = currentWords.drop(newStart)
+        return if (newWords.isNotEmpty()) newWords.joinToString(" ").trim()
+        else current.trim() // completely new content
     }
 
     private fun collectAllText(node: AccessibilityNodeInfo?, out: MutableList<String>) {
