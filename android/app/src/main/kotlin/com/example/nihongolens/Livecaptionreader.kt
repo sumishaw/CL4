@@ -82,7 +82,8 @@ class LiveCaptionReader : AccessibilityService() {
         lastCaptionText         = ""
         lastTranslatedSentence  = ""
         lastDetectedLang        = ""
-        sentenceBuffer.clear()
+        lastRawCaption          = ""
+        lastSentSuffix          = ""
         SpeechCaptureService.latestHindi   = ""
         SpeechCaptureService.latestEnglish = ""
         Log.i(TAG, "LiveCaptionReader v6 connected")
@@ -107,9 +108,12 @@ class LiveCaptionReader : AccessibilityService() {
 
     private var lastTranslatedSentence = ""
 
-    // Rolling buffer of recent caption sentences for context
-    private val sentenceBuffer = ArrayDeque<String>()
-    private val BUFFER_MAX = 3  // keep last 3 sentences for context
+    // The last raw full-text we saw from the Live Captions window
+    // Used to diff against the new text and extract only the NEW suffix
+    private var lastRawCaption = ""
+    // Sliding window of last ~200 chars already sent — prevents resending
+    // when Live Captions briefly scrolls back
+    private var lastSentSuffix = ""
 
     private fun readFromCaptionWindow(): String? {
         val allWindows = try { windows } catch (_: Exception) { return null }
@@ -130,29 +134,43 @@ class LiveCaptionReader : AccessibilityService() {
 
                 if (validTexts.isEmpty()) return null
 
-                // Take the longest text node — most complete Live Captions accumulation
-                val fullText = validTexts.maxByOrNull { it.length } ?: return null
+                // Live Captions accumulates into one long node — take the longest
+                val fullText = validTexts.maxByOrNull { it.length }?.trim() ?: return null
 
-                // Extract all new complete sentences from the full text
-                val newSentences = extractNewSentences(fullText)
-                if (newSentences.isEmpty()) return null
-
-                // Add new sentences to buffer
-                for (s in newSentences) {
-                    if (s !in sentenceBuffer) {
-                        sentenceBuffer.addLast(s)
-                    }
+                // ── Detect Live Captions reset ──────────────────────────────
+                // Live Captions clears itself after silence, starting fresh.
+                // Detect this: new text is much shorter AND doesn't end with
+                // anything from the old text → full reset, clear our state.
+                if (lastRawCaption.isNotEmpty() &&
+                    fullText.length < lastRawCaption.length / 2 &&
+                    !lastRawCaption.endsWith(fullText.takeLast(20).trim())) {
+                    lastRawCaption  = ""
+                    lastSentSuffix  = ""
+                    lastTranslatedSentence = ""
                 }
-                while (sentenceBuffer.size > BUFFER_MAX) sentenceBuffer.removeFirst()
 
-                // Send joined context — CT2 translates short lines much better with context
-                // e.g. "Yeah." alone → empty; "I understand. Yeah. Good." → हाँ। ठीक है।
-                val contextText = sentenceBuffer.joinToString(" ").trim()
-                if (contextText == lastTranslatedSentence) return null
-                if (contextText.length < 3) return null
+                // No change at all
+                if (fullText == lastRawCaption) return null
 
-                lastTranslatedSentence = contextText
-                return contextText
+                // ── Extract only the NEW suffix ─────────────────────────────
+                // Live Captions appends — so new content is always a suffix.
+                // Find the longest common prefix between old and new text,
+                // then everything after that is genuinely new.
+                val newPart = extractNewSuffix(lastRawCaption, fullText)
+                lastRawCaption = fullText
+
+                if (newPart.isBlank() || newPart.length < 3) return null
+
+                // ── Extract complete sentences from the new suffix ──────────
+                // The new suffix may be mid-sentence (word correction still ongoing).
+                // We send the last complete sentence + the incomplete tail for context.
+                val toSend = buildSendText(newPart, fullText)
+                if (toSend.isNullOrBlank()) return null
+                if (toSend == lastSentSuffix) return null
+
+                lastSentSuffix = toSend
+                return toSend
+
             } else {
                 root.recycle()
             }
@@ -160,18 +178,67 @@ class LiveCaptionReader : AccessibilityService() {
         return null
     }
 
-    private fun extractNewSentences(text: String): List<String> {
-        // Split on sentence boundaries (Japanese + English + common punctuation)
-        val raw = text.split(Regex("[。！？!?]+|(?<=[.])\\s+"))
+    /**
+     * Extract only the new content appended since last read.
+     * Live Captions always appends — old text is a prefix of new text.
+     * If the texts diverge (correction changed earlier words), return
+     * the last sentence of the new text as a safe fallback.
+     */
+    private fun extractNewSuffix(old: String, new: String): String {
+        if (old.isEmpty()) return new
+
+        // Happy path: new text starts with the old text (pure append)
+        if (new.startsWith(old)) {
+            return new.substring(old.length).trim()
+        }
+
+        // Live Captions corrected an earlier word — find longest common prefix
+        var i = 0
+        val minLen = minOf(old.length, new.length)
+        while (i < minLen && old[i] == new[i]) i++
+
+        // If we share at least 60% prefix, treat rest as new suffix
+        if (i > old.length * 0.6) {
+            return new.substring(i).trim()
+        }
+
+        // Texts diverged significantly — Live Captions reset or corrected heavily
+        // Return the last sentence fragment of the new text
+        return lastSentenceOf(new)
+    }
+
+    /**
+     * Build the text to actually send for translation.
+     * Includes: up to 1 previous complete sentence for CT2 context
+     * + the new content.
+     */
+    private fun buildSendText(newPart: String, fullText: String): String? {
+        // Get all complete sentences from the full text so far
+        val allSentences = fullText
+            .split(Regex("[。！？!?]+|(?<=[.])\\s+"))
             .map { it.trim() }
             .filter { it.length >= 3 }
 
-        if (raw.isEmpty()) {
-            return if (text.trim().length >= 3) listOf(text.trim()) else emptyList()
-        }
+        if (allSentences.isEmpty()) return newPart.trim().takeIf { it.length >= 3 }
 
-        // Return only sentences not already in our buffer
-        return raw.filter { it !in sentenceBuffer }
+        // The last sentence may be incomplete (still being dictated)
+        // Send last complete sentence + new fragment for best CT2 context
+        val lastComplete = allSentences.dropLast(1).lastOrNull() ?: ""
+        val lastFragment = allSentences.last()
+
+        // If new part is mostly within the last fragment, send last 2 sentences
+        val send = if (lastComplete.isNotEmpty())
+            "$lastComplete $lastFragment".trim()
+        else
+            lastFragment
+
+        return send.takeIf { it.length >= 3 }
+    }
+
+    private fun lastSentenceOf(text: String): String {
+        val parts = text.split(Regex("[。！？!?]+|(?<=[.])\\s+"))
+            .map { it.trim() }.filter { it.length >= 3 }
+        return parts.lastOrNull() ?: text.takeLast(100).trim()
     }
 
     private fun collectAllText(node: AccessibilityNodeInfo?, out: MutableList<String>) {
@@ -212,7 +279,8 @@ class LiveCaptionReader : AccessibilityService() {
             lastSentText           = ""
             lastTranslatedSentence = ""
             lastHindiOut           = ""
-            sentenceBuffer.clear()
+            lastRawCaption         = ""
+            lastSentSuffix         = ""
         }
         lastDetectedLang = scriptNow
 
