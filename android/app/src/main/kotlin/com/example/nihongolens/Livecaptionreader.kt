@@ -160,15 +160,13 @@ class LiveCaptionReader : AccessibilityService() {
     }
 
     private fun isStaticUiLabel(text: String): Boolean {
-        // Skip language selector labels like "English (United States)"
         val lower = text.lowercase()
+        // Drop Live Captions UI locale strings e.g. "English (United States)"
+        // These are always short and match the pattern: "Language (Region)"
+        if (text.matches(Regex("[A-Za-zÀ-ÿ ]+\\([A-Za-zÀ-ÿ ]+\\)")) && text.length < 60) return true
         if (lower.contains("united states") || lower.contains("united kingdom")) return true
-        if (lower.contains("english") && lower.length < 40) return true
-        if (lower.contains("japanese") && lower.length < 40) return true
-        if (lower.contains("chinese") && lower.length < 40) return true
-        if (lower.contains("korean") && lower.length < 40) return true
-        if (lower.contains("español") || lower.contains("français")) return true
-        // Skip single words that are likely UI buttons
+        if (lower.contains("simplified") || lower.contains("traditional")) return true
+        // Drop single words with no space — Live Captions UI buttons, not captions
         if (!text.contains(" ") && text.length < 15) return true
         return false
     }
