@@ -69,13 +69,15 @@ class LiveCaptionReader : AccessibilityService() {
                 AccessibilityEvent.TYPE_WINDOWS_CHANGED
             )
             info.feedbackType        = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            info.notificationTimeout = 50
+            info.notificationTimeout = 100
             info.flags               = (
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
             )
-            // Monitor confirmed Live Captions package only
-            info.packageNames = LIVE_CAPTION_PACKAGES.toTypedArray()
+            // Do NOT set packageNames — we need events from ALL packages
+            // (video player, browser etc.) because TYPE_WINDOWS_CHANGED fires
+            // with the foreground app's package, not com.google.android.as
+            info.packageNames = null
         }
 
         startTranslateWorker()
@@ -97,12 +99,12 @@ class LiveCaptionReader : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!isRunning || event == null) return
-        val pkg = event.packageName?.toString() ?: return
-        if (pkg !in LIVE_CAPTION_PACKAGES) return
 
-        // readFromCaptionWindow handles all dedup internally via lastRawCaption/lastSentSuffix.
-        // Do NOT add an extra lastCaptionText gate here — it causes Caption Lens to stop
-        // when Live Captions is mid-sentence correcting (same send-text, different raw text).
+        // CRITICAL: Do NOT filter by event.packageName here.
+        // TYPE_WINDOWS_CHANGED fires with the foreground app's package (video player),
+        // not com.google.android.as — filtering by package causes us to miss most events.
+        // We scan the windows list ourselves inside readFromCaptionWindow() to find
+        // the Live Captions window regardless of which package triggered the event.
         val sendText = readFromCaptionWindow() ?: return
         Log.d(TAG, "Caption: $sendText")
         scheduleTranslation(sendText)
@@ -163,12 +165,21 @@ class LiveCaptionReader : AccessibilityService() {
         if (fullText == lastRawCaption) return null
         lastRawCaption = fullText
 
-        // Send the last 120 chars of raw text — always has the freshest content,
-        // gives CT2 enough context, never gets stuck on stale sentence boundaries
-        val tail = fullText.takeLast(120).trim()
-        if (tail == lastSentText2) return null
-        lastSentText2 = tail
-        return tail
+        // Extract the genuinely NEW portion since last read.
+        // Live Captions appends within a session — new content is always a suffix.
+        val newPart: String
+        if (fullText.startsWith(lastSentText2) && lastSentText2.isNotEmpty()) {
+            // Pure append — extract only what's new
+            newPart = fullText.substring(lastSentText2.length).trim()
+        } else {
+            // LC corrected earlier words or reset — send last ~150 chars for context
+            newPart = fullText.takeLast(150).trim()
+        }
+
+        if (newPart.length < 3) return null
+        if (newPart == lastSentText2) return null
+        lastSentText2 = fullText  // track full text, not just tail
+        return newPart
     }
 
 
