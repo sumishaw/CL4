@@ -109,49 +109,41 @@ class OverlayService : Service() {
         if (hindi == lastHindi) return
         lastHindi = hindi
 
-        // Split into sentences and add ALL to the display queue — never drop
         val incoming = splitHindi(hindi.trim())
         for (sentence in incoming) {
             if (sentence.isNotBlank()) displayQueue.addLast(sentence)
         }
 
-        // If nothing is currently displayed, start showing immediately
-        if (lines.isEmpty()) showNextFromQueue()
-
+        // Kick the display loop whenever new content arrives
+        advanceDisplay()
         rescheduleSilence()
     }
 
-    // Pull the next sentence from displayQueue and show it.
-    // When 2 lines are full → page-flip: clear, then show the new sentence.
-    // The current 2-line block stays visible until this is called with new content.
-    private fun showNextFromQueue() {
-        if (displayQueue.isEmpty()) return
-        val sentence = displayQueue.removeFirst()
+    // Called whenever new sentences arrive OR after each line is shown.
+    // If lines < 2: fill from queue immediately.
+    // If lines == 2: schedule a page-flip after MIN_LINE_MS, then fill again.
+    private val MIN_LINE_MS = 800L   // minimum time each line stays visible
+    private var flipScheduled = false
 
-        if (lines.size >= MAX_LINES) {
-            // Current block is full — fade it out, then show next sentence
-            clearWithFade {
-                lines.clear()
-                lines.add(sentence)
-                renderLines(animate = true)
-                // If more sentences are waiting, schedule showing the second one
-                scheduleNextLine()
-            }
-        } else {
-            lines.add(sentence)
+    private fun advanceDisplay() {
+        // Fill empty slots immediately
+        while (lines.size < MAX_LINES && displayQueue.isNotEmpty()) {
+            lines.add(displayQueue.removeFirst())
             renderLines(animate = true)
-            scheduleNextLine()
         }
-    }
 
-    // Schedule pulling the next queued sentence.
-    // Give each line a minimum display time so it's readable (700ms).
-    // If more are queued, pull immediately after min display time.
-    private fun scheduleNextLine() {
-        if (displayQueue.isEmpty()) return
-        mainHandler.postDelayed({
-            if (running) showNextFromQueue()
-        }, 700L)
+        // If now full and more waiting, schedule a page-flip
+        if (lines.size >= MAX_LINES && displayQueue.isNotEmpty() && !flipScheduled) {
+            flipScheduled = true
+            mainHandler.postDelayed({
+                flipScheduled = false
+                if (!running) return@postDelayed
+                clearWithFade {
+                    lines.clear()
+                    advanceDisplay()   // recurse: fill new block from queue
+                }
+            }, MIN_LINE_MS)
+        }
     }
 
     // ── Render ────────────────────────────────────────────────────────────────
@@ -229,6 +221,7 @@ class OverlayService : Service() {
             clearWithFade {
                 lines.clear()
                 displayQueue.clear()
+                flipScheduled = false
                 lastHindi = ""
             }
         }
