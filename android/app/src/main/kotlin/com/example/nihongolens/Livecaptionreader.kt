@@ -292,11 +292,16 @@ class LiveCaptionReader : AccessibilityService() {
     private fun enqueue(text: String) {
         if (text.isBlank() || text.length < 4) return
 
+        // CRITICAL: block enqueue while TTS is speaking or in grace period
+        // TTS Hindi audio → tablet speaker → Live Captions captures it → feedback loop
+        if (HindiTtsService.isSuppressed()) {
+            CaptionLogger.log(TAG, "SKIP: TTS suppressed (anti-loop)")
+            return
+        }
+
         val n = norm(text)
 
         // Skip if exactly same as last enqueued OR last sent to server
-        // lastEnqueued catches debounce repeats
-        // lastSentText catches silence repeats (LC window frozen, watchdog keeps firing)
         if (n == lastEnqueued || n == norm(lastSentText)) {
             CaptionLogger.log(TAG, "SKIP dup")
             return
