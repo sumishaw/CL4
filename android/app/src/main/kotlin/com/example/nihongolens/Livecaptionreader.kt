@@ -292,16 +292,15 @@ class LiveCaptionReader : AccessibilityService() {
     private fun enqueue(text: String) {
         if (text.isBlank() || text.length < 4) return
 
-        // LOOP PREVENTION 1: Block if text is primarily Hindi/Devanagari script
-        // This catches TTS output being re-captured by Live Captions
+        // LOOP PREVENTION 1: Block ANY Devanagari — TTS output re-captured by Live Captions
         val devanagariCount = text.count { it.code in 0x0900..0x097F }
-        val letterCount = text.count { it.isLetter() }.coerceAtLeast(1)
-        if (devanagariCount.toFloat() / letterCount > 0.3f) {
-            CaptionLogger.log(TAG, "SKIP: Devanagari text (TTS loop guard)")
+        if (devanagariCount > 0) {
+            CaptionLogger.log(TAG, "SKIP: Devanagari detected (TTS loop guard)")
             return
         }
 
-        // LOOP PREVENTION 2: Block while TTS is speaking or in grace period
+        // LOOP PREVENTION 2: Block completely during TTS speaking + grace period
+        // isSuppressed() = isSpeaking OR within 2s grace after speech ends
         if (HindiTtsService.isSuppressed()) {
             CaptionLogger.log(TAG, "SKIP: TTS suppressed (anti-loop)")
             return
