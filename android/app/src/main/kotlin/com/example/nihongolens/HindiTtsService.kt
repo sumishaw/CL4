@@ -73,7 +73,10 @@ object HindiTtsService {
     private val genderHistory  = ArrayDeque<Gender>()
     private val GENDER_HISTORY = 6
 
+    private var cacheDir: java.io.File? = null
+
     fun init(context: Context) {
+        cacheDir = context.cacheDir   // always writable, no permissions needed
         startFetchWorker()
         startPlayWorker()
         startGenderPoller()
@@ -303,9 +306,10 @@ object HindiTtsService {
                     .build())
                 mp.setVolume(1.0f, 1.0f)
 
-                // Write WAV to temp file — reliable on all Android versions
-                val f = java.io.File("/data/local/tmp/tts_${System.currentTimeMillis()}.wav")
-                f.parentFile?.mkdirs()
+                // Write WAV to app cache dir — always writable, no permissions needed
+                val dir = cacheDir ?: java.io.File("/data/data/com.example.nihongolens/cache")
+                dir.mkdirs()
+                val f = java.io.File(dir, "tts_${System.currentTimeMillis()}.wav")
                 f.writeBytes(wavBytes)
                 mp.setDataSource(f.absolutePath)
 
