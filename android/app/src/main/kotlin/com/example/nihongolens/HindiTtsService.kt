@@ -128,7 +128,6 @@ object HindiTtsService {
         if (!enabled || hindi.isBlank()) return
         val n = hindi.trim().replace(Regex("\\s+"), " ")
 
-        // Token dedup
         val token = n.hashCode()
         if (spokenTokens.putIfAbsent(token, true) != null) return
         if (spokenTokens.size > 300) spokenTokens.clear()
@@ -140,6 +139,9 @@ object HindiTtsService {
             Gender.MALE   -> "male"
             Gender.AUTO   -> if (detectedGender == Gender.FEMALE) "female" else "male"
         }
+
+        // If fetch queue is backlogged (> 2 items), drop oldest to stay near real-time
+        while (fetchQueue.size >= 2) fetchQueue.poll()
         fetchQueue.offer(FetchItem(n, gender, speed))
     }
 
