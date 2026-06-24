@@ -196,6 +196,8 @@ object HindiTtsService {
             detectedGender = majority
             android.util.Log.d("HindiTTS", "Gender→$majority f=$fScore m=$mScore lang=$normalizedLang hist=${genderHistory.size} '${srcText.take(40)}'")
             CaptionLogger.log("HindiTTS", "Gender switched to $majority (fScore=$fScore mScore=$mScore)")
+            // Clear dedup tokens so next sentence re-speaks in new voice
+            spokenTokens.clear()
         }
     }
 
@@ -240,7 +242,7 @@ object HindiTtsService {
                     withContext(Dispatchers.Main) {
                         OverlayService.clearTtsText()
                     }
-                    speakingUntilMs = System.currentTimeMillis() + 800L
+                    speakingUntilMs = System.currentTimeMillis() + 300L
                 } catch (e: Exception) {
                     Log.e(TAG, "Play: ${e.message}")
                 } finally {
