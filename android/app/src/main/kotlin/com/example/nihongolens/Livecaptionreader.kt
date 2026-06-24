@@ -192,6 +192,10 @@ class LiveCaptionReader : AccessibilityService() {
                 if (dropped > 0) CaptionLogger.log(TAG, "LC gone dropped=$dropped")
                 else              CaptionLogger.log(TAG, "LC gone")
                 OverlayService.clearQueue()
+                // Stop TTS immediately — video is silent/paused
+                HindiTtsService.stopAndClear()
+                sentenceTimerJob?.cancel(); sentenceTimerJob = null
+                sentenceBuffer = ""
             }
             return null
         }
@@ -268,6 +272,12 @@ class LiveCaptionReader : AccessibilityService() {
 
     private fun norm(t: String) = t.trim().replace(Regex("\\s+"), " ")
 
+    // Sentence accumulation — wait for complete sentence before translating
+    private var sentenceBuffer      = ""
+    private var lastLCChangeMs      = 0L
+    private val SENTENCE_SILENCE_MS = 2_500L  // translate after 2.5s of no new LC text
+    private var sentenceTimerJob: Job? = null
+
     private fun schedule(text: String) {
         val script = detectScript(text)
         if (script != confirmedLang) {
@@ -276,16 +286,55 @@ class LiveCaptionReader : AccessibilityService() {
                     CaptionLogger.log(TAG, "LANG $confirmedLang→$script")
                     confirmedLang = script; pendingLang = ""; pendingCount = 0
                     lastEnqueued = ""; lastRawFull = ""; lastEnqueuedSents.clear()
+                    sentenceBuffer = ""
                     queue.clear(); expectedSeq = seqCounter.get() + 1
                 }
             } else { pendingLang = script; pendingCount = 1 }
         } else { pendingLang = ""; pendingCount = 0 }
 
-        // Debounce: wait for LC word-correction to settle before enqueuing
+        sentenceBuffer = text
+        lastLCChangeMs = System.currentTimeMillis()
+
+        // Check if text ends with sentence-ending punctuation → translate immediately
+        val trimmed = text.trim()
+        val endsWithPunct = trimmed.endsWith(".") || trimmed.endsWith("?") ||
+                            trimmed.endsWith("!") || trimmed.endsWith("。") ||
+                            trimmed.endsWith("？") || trimmed.endsWith("！") ||
+                            trimmed.endsWith("…")
+
+        if (endsWithPunct) {
+            // Complete sentence detected — translate now
+            sentenceTimerJob?.cancel()
+            pendingJob?.cancel()
+            pendingJob = scope.launch {
+                delay(150)  // brief settle for LC word correction
+                enqueue(sentenceBuffer)
+                sentenceBuffer = ""
+            }
+            return
+        }
+
+        // No sentence end yet — reset silence timer
+        sentenceTimerJob?.cancel()
+        sentenceTimerJob = scope.launch {
+            delay(SENTENCE_SILENCE_MS)
+            // LC stopped updating for 2.5s — treat as sentence end
+            if (sentenceBuffer.isNotBlank()) {
+                CaptionLogger.log(TAG, "SILENCE: translating after ${SENTENCE_SILENCE_MS}ms")
+                enqueue(sentenceBuffer)
+                sentenceBuffer = ""
+            }
+        }
+
+        // Also keep debounce as safety net for very fast speech
         pendingJob?.cancel()
         pendingJob = scope.launch {
-            delay(DEBOUNCE_MS)
-            enqueue(text)
+            delay(600)  // longer debounce — give LC time to complete word
+            val current = sentenceBuffer
+            if (current.isNotBlank() && current.length > (lastEnqueued.length + 12)) {
+                // Meaningful new content accumulated — translate
+                enqueue(current)
+            }
         }
     }
 
@@ -299,8 +348,21 @@ class LiveCaptionReader : AccessibilityService() {
             return
         }
 
+        // LOOP PREVENTION 1b: Block romanized Hindi — TTS audio transcribed as Latin by LC
+        // These words appear in LC when TTS Hindi speech is re-captured
+        val lower = text.lowercase()
+        val romanizedHindi = listOf(
+            "sunkar","muskura","heto","hain","nahin","theek","aapko",
+            "tumhe","kijiye","karein","chahiye","matlab","lekin",
+            "parantu","isliye","kyunki","waise","raha","rahi","rahe",
+            "bolta","bolti","kehta","kehti","sunta","sunti"
+        )
+        if (romanizedHindi.any { lower.contains(it) } && text.split(" ").size < 10) {
+            CaptionLogger.log(TAG, "SKIP: romanized Hindi detected '${text.take(30)}'")
+            return
+        }
+
         // LOOP PREVENTION 2: Block completely during TTS speaking + grace period
-        // isSuppressed() = isSpeaking OR within 2s grace after speech ends
         if (HindiTtsService.isSuppressed()) {
             CaptionLogger.log(TAG, "SKIP: TTS suppressed (anti-loop)")
             return
