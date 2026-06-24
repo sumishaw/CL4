@@ -130,9 +130,9 @@ class MainActivity : FlutterActivity() {
 
                 "stopOverlay" -> {
                     stopService(Intent(this, OverlayService::class.java))
-                    // Restore mic
                     val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
                     am.isMicrophoneMute = false
+                    GenderAnalyzer.stop()
                     result.success(true)
                 }
 
@@ -404,12 +404,22 @@ class MainActivity : FlutterActivity() {
             pendingProjectionResult = null
 
             if (resultCode == Activity.RESULT_OK && data != null) {
-                Log.d(TAG, "MediaProjection granted — starting SpeechCaptureService")
+                Log.d(TAG, "MediaProjection granted — starting SpeechCaptureService + GenderAnalyzer")
                 val i = Intent(this, SpeechCaptureService::class.java).apply {
                     putExtra(SpeechCaptureService.EXTRA_RESULT_CODE, resultCode)
                     putExtra(SpeechCaptureService.EXTRA_RESULT_DATA, data)
                 }
                 startForegroundServiceCompat(i)
+
+                // Start gender analyzer on the same MediaProjection
+                // This captures media audio for FFT gender detection
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val mgr = getSystemService(MEDIA_PROJECTION_SERVICE)
+                        as android.media.projection.MediaProjectionManager
+                    val proj = mgr.getMediaProjection(resultCode, data)
+                    GenderAnalyzer.start(proj)
+                }
+
                 pending?.success(true)
             } else {
                 Log.w(TAG, "MediaProjection denied (resultCode=$resultCode)")
