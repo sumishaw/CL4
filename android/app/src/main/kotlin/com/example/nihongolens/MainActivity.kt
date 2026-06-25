@@ -297,9 +297,8 @@ class MainActivity : FlutterActivity() {
     fun onLiveCaptionReaderConnected() {
         mainHandler.post {
             methodChannel?.invokeMethod("onLiveCaptionReaderConnected", null)
-            // Ensure gender projection is active — handles case where LC was enabled
-            // before the overlay started, or projection expired
-            requestGenderProjection()
+            // Projection for GenderAnalyzer is requested from startOverlay (user-triggered)
+            // NOT here — calling startActivityForResult during app restore crashes the app
         }
     }
 
