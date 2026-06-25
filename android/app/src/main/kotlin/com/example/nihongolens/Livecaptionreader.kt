@@ -520,7 +520,6 @@ class LiveCaptionReader : AccessibilityService() {
                 // Pass English source text for feminine verb form hints (she/her → ती/ी)
                 // This ONLY affects verb conjugation, NOT voice switching
                 HindiTtsService.speak(hindi, text)
-            }
         }
     }
 
